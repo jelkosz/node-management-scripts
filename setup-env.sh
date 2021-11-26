@@ -10,7 +10,7 @@ TRUE=0
 FALSE=1
 
 ISO_FILE=""
-CLUSTER_NAME="research-agent-$(mktemp -uq XXXXXXXX)"
+CLUSTER_NAME="agent-$(date +%Y-%m-%d_%H-%M)-$(mktemp -uq XXXXXXXX)"
 DEBUG=$FALSE
 
 MASTER_DISKGIB=${MASTER_DISKGIB:-20}

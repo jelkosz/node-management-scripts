@@ -3,7 +3,7 @@
 URL=$1
 NUM_OF_NODES=$2
 
-DOWNLOADED_FILENAME="/tmp/xfrom-ui-research-iso-$(mktemp -uq XXXXXXXX).iso"
+DOWNLOADED_FILENAME="/tmp/from-ui-$(mktemp -uq XXXXXXXX).iso"
 
 wget -O $DOWNLOADED_FILENAME ''$URL'' --no-check-certificate >> /tmp/vmrunner.log 
 
