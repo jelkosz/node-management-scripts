@@ -10,7 +10,7 @@ TRUE=0
 FALSE=1
 
 ISO_FILE=""
-CLUSTER_NAME="agent-$(date +%Y-%m-%d_%H-%M)-$(mktemp -uq XXXXXXXX)"
+CLUSTER_NAME="$(date +%Y-%m-%d_%H-%M)-$(mktemp -uq XXXXXXXX)"
 DEBUG=$FALSE
 
 MASTER_DISKGIB=${MASTER_DISKGIB:-20}
@@ -105,7 +105,7 @@ function main {
   do
     case $i in
         -c=* | --cluster-name=*)
-          CLUSTER_NAME="${i#*=}"
+          CLUSTER_NAME="${i#*=}-$CLUSTER_NAME"
           ;;
 	-n=* | --num-of-nodes=*)
           NUM_OF_NODES="${i#*=}"
