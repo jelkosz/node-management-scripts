@@ -11,9 +11,13 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET', 'POST'])
 def create_vms():
+    def get_running_vms():
+        vm_list = subprocess.check_output(['./get_running_vms.sh']).decode("utf-8").strip().split()
+        return f'{len(vm_list)} VMs running. <a href="/manage">Manage</a>'
+
     def get_status():
-        wget = subprocess.check_output(['/root/webapp/get_running_process_count.py', 'wget']).decode("utf-8").strip()
-        virt_install = subprocess.check_output(['/root/webapp/get_running_process_count.py', 'virt-install']).decode("utf-8").strip()
+        wget = subprocess.check_output(['./get_running_process_count.py', 'wget']).decode("utf-8").strip()
+        virt_install = subprocess.check_output(['./get_running_process_count.py', 'virt-install']).decode("utf-8").strip()
 
         if wget != "2":
             return "<div>An image is being downloaded</div>"
@@ -46,7 +50,7 @@ def create_vms():
 
     submit_form = """
         <div>
-            <form action="/" method="post" id="form1">
+            <form action="/" method="post" id="vm_create_form">
                 <label for="url">Paste the discovery iso URL into this box</label>
                 <br />
                 <textarea id="url" name="url" rows="4" cols="150"></textarea>
@@ -60,11 +64,12 @@ def create_vms():
                 <input type="text" id="nodes-prefix" name="node-prefix" value="">
 
             </form>
-            <button type="submit" form="form1" value="Submit">Submit</button>
+            <button type="submit" form="vm_create_form" value="Submit">Submit</button>
         <div>
+        <br />
     """
 
-    div = submit_form
+    div = submit_form + get_running_vms()
     status = get_status()
     in_progress_message = "Host creation in progress. Please wait until the process finished before submitting a next request. Current status: " + status
 
@@ -102,3 +107,33 @@ def create_vms():
     else:
         return div + title
 
+@app.route('/manage', methods=['GET', 'POST'])
+def manage_vms():
+    def delete_vms_on_background(vms):
+        subprocess.run(['./delete_vms.sh'] + vms)
+
+    def get_running_vms():
+        form_header = """
+            <form action="/manage" method="post" id="vm_delete_form">
+        """
+        form_footer = """
+            <br /> <button type="submit" form="vm_delete_form" value="Submit">Delete selected VMs</button>
+        </form>
+        """
+
+        vm_list = subprocess.check_output(['./get_running_vms.sh']).decode("utf-8").strip().split()
+        vm_checkboxes = [f'<input type="checkbox" id="{vm}" name="vmname" value="{vm}"><label for="{vm}">{vm}</label>'  for vm in vm_list]
+        vms_joined = "<br />".join(vm_checkboxes)
+
+        return form_header + vms_joined + form_footer
+
+    back_button = """
+        <br/ > Back <a href="/">Back</a>
+    """
+
+    if request.method == 'POST':
+        vm_list = request.form.getlist('vmname')
+        if (len(vm_list) > 0):
+            delete_vms_on_background(vm_list)
+
+    return get_running_vms() + back_button
