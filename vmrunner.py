@@ -128,7 +128,7 @@ def manage_vms():
         return form_header + vms_joined + form_footer
 
     back_button = """
-        <br/ > Back <a href="/">Back</a>
+        <br/ ><a href="/">Back</a> to vm creation form
     """
 
     if request.method == 'POST':
