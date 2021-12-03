@@ -1,16 +1,47 @@
 from flask import Flask
-from flask import request
+from flask import request, redirect
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
 import subprocess
 import re
 import validators
 
-app = Flask(__name__)
-
 # Dear poor person looking at this code. I apologise.
 # --Tomas
 
+# dependencies:
+# pip install flask
+# pip install Flask-HTTPAuth
+
+app = Flask(__name__)
+auth = HTTPBasicAuth()
+
+users = {
+}
+
+def init_users():
+    with open ("../users", "r") as usersfile:
+        users_and_pass = usersfile.readlines()
+        for user_and_pass in users_and_pass:
+            (user, password) = user_and_pass.strip().split('=')
+            users[user] = password
+
+init_users()
+
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and \
+            check_password_hash(users.get(username), password):
+        return username
+
+@app.route('/logout', methods=['GET'])
+def logout():
+    return redirect(f'http://.:.@{request.host}')
+
 @app.route('/', methods=['GET', 'POST'])
+@auth.login_required
 def create_vms():
+
     def get_running_vms():
         vm_list = subprocess.check_output(['./get_running_vms.sh']).decode("utf-8").strip().split()
         return f'{len(vm_list)} VMs running. <a href="/manage">Manage</a>'
@@ -40,6 +71,7 @@ def create_vms():
             <title>Node Creator 4000</title>
         </head>
     """
+
     dont_resubmit = """
         <script>
         if ( window.history.replaceState ) {
@@ -69,15 +101,20 @@ def create_vms():
         <br />
     """
 
-    div = submit_form + get_running_vms()
+    logout_button = """
+        <br/ ><a href="/logout">logout</a>
+    """
+
+    vm_create_screen = title + submit_form + get_running_vms() + logout_button
+
     status = get_status()
     in_progress_message = "Host creation in progress. Please wait until the process finished before submitting a next request. Current status: " + status
 
     if status != "":
-        div = in_progress_message + refresher
+        vm_create_screen = in_progress_message + refresher + logout_button
     if request.method == 'POST':
         if get_status() != "":
-            return in_progress_message + dont_resubmit + refresher
+            return in_progress_message + logout_button + dont_resubmit + refresher
 
         num_of_nodes = request.form['numofnodes'].strip()
         if num_of_nodes == "":
@@ -105,9 +142,10 @@ def create_vms():
         start_vms_on_background(url, num_of_nodes, prefix)
         return "<div>The host creation has been submitted. The hosts should start showing up in the wizard in few minutes</div><br /> Current status: " + get_status() + dont_resubmit + refresher
     else:
-        return div + title
+        return vm_create_screen
 
 @app.route('/manage', methods=['GET', 'POST'])
+@auth.login_required
 def manage_vms():
     def delete_vms_on_background(vms):
         subprocess.run(['./delete_vms.sh'] + vms)
