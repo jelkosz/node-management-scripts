@@ -1,5 +1,9 @@
 #! /usr/bin/env bash
 
+# This script has been written by https://github.com/jkilzi
+# I have just added support for passing num of nodes from outside.
+# Next step is to contribute this support back to upstream
+
 set -eu
 
 COMMAND="$0"
