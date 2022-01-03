@@ -6,8 +6,8 @@ import subprocess
 import re
 import validators
 
-# Dear poor person looking at this code. I apologise.
-# --Tomas
+# A simple web ui which allows users easily create nodes for https://github.com/openshift-assisted/assisted-ui-lib for testing purposes.
+# The intended audience are UX designers/researchers which need to be able to go over the whole flow easily but the resulting cluster is not meant to be actually used.
 
 # dependencies:
 # pip install flask
@@ -43,12 +43,12 @@ def logout():
 def create_vms():
 
     def get_running_vms():
-        vm_list = subprocess.check_output(['./get_running_vms.sh']).decode("utf-8").strip().split()
+        vm_list = subprocess.check_output(['./host_scripts/get_running_vms.sh']).decode("utf-8").strip().split()
         return f'{len(vm_list)} VMs running. <a href="/manage">Manage</a>'
 
     def get_status():
-        wget = subprocess.check_output(['./get_running_process_count.py', 'wget']).decode("utf-8").strip()
-        virt_install = subprocess.check_output(['./get_running_process_count.py', 'virt-install']).decode("utf-8").strip()
+        wget = subprocess.check_output(['./host_scripts/get_running_process_count.sh', 'wget']).decode("utf-8").strip()
+        virt_install = subprocess.check_output(['./host_scripts/get_running_process_count.sh', 'virt-install']).decode("utf-8").strip()
 
         if wget != "2":
             return "<div>An image is being downloaded</div>"
@@ -57,7 +57,7 @@ def create_vms():
         return ""
 
     def start_vms_on_background(url, num_of_nodes, prefix):
-        subprocess.Popen(['./runner.sh', url, num_of_nodes, prefix])
+        subprocess.Popen(['./host_scripts/create_vms_from_iso_path.sh', url, num_of_nodes, prefix])
 
     refresher = """
         <head>
@@ -148,7 +148,7 @@ def create_vms():
 @auth.login_required
 def manage_vms():
     def delete_vms_on_background(vms):
-        subprocess.run(['./delete_vms.sh'] + vms)
+        subprocess.run(['./host_scripts/delete_vms.sh'] + vms)
 
     def get_running_vms():
         form_header = """
@@ -159,7 +159,7 @@ def manage_vms():
         </form>
         """
 
-        vm_list = subprocess.check_output(['./get_running_vms.sh']).decode("utf-8").strip().split()
+        vm_list = subprocess.check_output(['./host_scripts/get_running_vms.sh']).decode("utf-8").strip().split()
         vm_checkboxes = [f'<input type="checkbox" id="{vm}" name="vmname" value="{vm}"><label for="{vm}">{vm}</label>'  for vm in vm_list]
         vms_joined = "<br />".join(vm_checkboxes)
 
