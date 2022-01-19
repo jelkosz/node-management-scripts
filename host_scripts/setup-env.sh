@@ -66,6 +66,8 @@ function create_host {
     --name="$NAME" \
     --cdrom="$ISO_FILE" \
     --vcpus="$CPUS" \
+    --boot machine=q35 \
+    --boot cdrom,fd,hd \
     --ram=$((MEMMIB * 1024)) \
     --disk=size="$DISKGIB",pool="$POOL" \
     --os-variant=rhel-unknown \
