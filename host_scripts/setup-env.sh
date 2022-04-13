@@ -21,6 +21,7 @@ MASTER_CPUS=${MASTER_CPUS:-4}
 WORKER_DISKGIB=${WORKER_DISKGIB:-20}
 WORKER_MEMMIB=${WORKER_MEMMIB:-8}
 WORKER_CPUS=${WORKER_CPUS:-2}
+POOL=${STORAGE_POOL:-default}
 
 function usage {
   cat << EOS
@@ -50,7 +51,6 @@ function create_host {
   local DISKGIB=121
   local MEMMIB=33
   local CPUS=8
-  local POOL=default
 
   if [[ $DEBUG -eq $TRUE ]]
   then
@@ -144,6 +144,7 @@ function main {
   fi
   create_masters $NUM_OF_NODES
   [[ $WITH_WORKERS -eq $TRUE ]] && create_workers 2
+  exit 0
 }
 
 main "$@"
