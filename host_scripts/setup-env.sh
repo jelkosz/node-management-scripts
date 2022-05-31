@@ -48,9 +48,9 @@ EOS
 
 function create_host {
   local NAME=${1:-"$CLUSTER_NAME"}
-  local DISKGIB=121
-  local MEMMIB=33
-  local CPUS=8
+  local DISKGIB=${2:-121}
+  local MEMMIB=${3:-33}
+  local CPUS=${4:-8}
 
   if [[ $DEBUG -eq $TRUE ]]
   then
@@ -81,7 +81,7 @@ function create_masters {
 
   for i in $(seq "$N")
   do
-    create_host "$CLUSTER_NAME-$i" $((MASTER_DISKGIB + i)) "$MASTER_MEMMIB" "$MASTER_CPUS"
+    create_host "$CLUSTER_NAME-$i" "$MASTER_DISKGIB" "$MASTER_MEMMIB" "$MASTER_CPUS"
   done
 }
 
@@ -90,7 +90,7 @@ function create_workers {
 
   for i in $(seq "$N")
   do
-    create_host "$CLUSTER_NAME-worker-$i" $((WORKER_DISKGIB + i)) "$WORKER_MEMMIB" "$WORKER_CPUS"
+    create_host "$CLUSTER_NAME-worker-$i" "$WORKER_DISKGIB" "$WORKER_MEMMIB" "$WORKER_CPUS"
   done
 }
 
