@@ -19,10 +19,9 @@ app = Flask(__name__)
 # pip install flask
 # pip install Flask-HTTPAuth
 
-
 # checks if the request actually came from the correct slack client or its an attack
 def verify_client_signature(request):
-    # mostly taken from: https://api.slack.com/authentication/verifying-requests-from-slack#signing_secrets_admin_page
+    # https://api.slack.com/authentication/verifying-requests-from-slack#signing_secrets_admin_page
     
     slack_signing_secret=''
     with open('slack_secret') as f:
@@ -45,8 +44,20 @@ def verify_client_signature(request):
 
     return 'Not an authorized client, rejecting request'
 
-def verify_request(request):
-    return verify_client_signature(request)
+def validate_input(*strings):
+    def validate_string(to_validate):
+        if len(to_validate) > 30:
+            return 'Input argument too long. Max length 30, actual: ' + to_validate
+
+        valid = re.match('^[\w-]+$', to_validate) is not None
+        if not valid:
+            return 'Only alphanumeric values and dashes are allowed, received: ' + to_validate
+        return None
+
+    for string in strings:
+        err = validate_string(string)
+        if err is not None:
+            return err
 
 def get_name(entity):
     return entity['metadata']['name']
@@ -68,15 +79,15 @@ def load_instances():
 
 @app.route('/about', methods=['POST'])
 def about():
-    validation_error = verify_request(request)
+    validation_error = verify_client_signature(request)
     if validation_error is not None:
         return validation_error
-    
+
     return 'This is the about message'
 
 @app.route('/list-templates', methods=['POST'])
 def list_templates():
-    validation_error = verify_request(request)
+    validation_error = verify_client_signature(request)
     if validation_error is not None:
         return validation_error
 
@@ -95,7 +106,7 @@ def list_templates():
 
 @app.route('/list-clusters', methods=['POST'])
 def list_instances():
-    validation_error = verify_request(request)
+    validation_error = verify_client_signature(request)
     if validation_error is not None:
         return validation_error
 
@@ -112,13 +123,17 @@ def list_instances():
 
 @app.route('/get-credentials', methods=['POST'])
 def get_credentials():
-    validation_error = verify_request(request)
+    validation_error = verify_client_signature(request)
     if validation_error is not None:
         return validation_error
 
     params = request.form.get('text').split()
     if len(params) != 1:
         return 'Exactly one parameter expected. Example /get-credentials my-cluster-name'
+
+    input_err = validate_input(params[0])
+    if (input_err) is not None:
+        return input_err
 
     def bg_list_instances(cluster_name, response_url):
         instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', 'slackbot-ns', '-o', 'json']).decode("utf-8").strip())
@@ -142,12 +157,11 @@ def get_credentials():
     thr = Thread(target=bg_list_instances, args=[params[0], response_url])
     thr.start()
 
-
     return 'Getting credentials...'
 
 @app.route('/deploy', methods=['POST'])
 def deploy():
-    validation_error = verify_request(request)
+    validation_error = verify_client_signature(request)
     if validation_error is not None:
         return validation_error
 
@@ -179,6 +193,10 @@ spec:
     template_name = params[0]
     cluster_name = params[1]
     
+    input_err = validate_input(template_name, cluster_name)
+    if (input_err) is not None:
+        return input_err
+
     response_url = request.form.get("response_url")
     thr = Thread(target=bg_list_instances, args=[template_name, cluster_name, response_url])
     thr.start()
