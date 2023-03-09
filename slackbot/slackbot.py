@@ -62,6 +62,12 @@ def validate_input(*strings):
 def get_name(entity):
     return entity['metadata']['name']
 
+def get_requester(entity):
+    annotations = entity['metadata']['annotations']
+    if 'slackbot.openshift.io/requester' in annotations:
+        return annotations['slackbot.openshift.io/requester']
+    return '<unknown user>'
+
 def get_status(entity):
     if 'status' in entity:
         status = entity['status']
@@ -74,8 +80,7 @@ def load_templates():
     return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplates', '-o', 'json']).decode("utf-8").strip())
 
 def load_instances():
-    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstances', '-n', 'slackbot-ns', '-o', 'json']).decode("utf-8").strip())
-
+    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstances', '-n', 'default', '-o', 'json']).decode("utf-8").strip())
 
 @app.route('/about', methods=['POST'])
 def about():
@@ -83,7 +88,7 @@ def about():
     if validation_error is not None:
         return validation_error
 
-    return 'This is the about message'
+    return 'This is the about message\n • one \n • two'
 
 @app.route('/list-templates', methods=['POST'])
 def list_templates():
@@ -92,7 +97,7 @@ def list_templates():
         return validation_error
 
     def bg_list_templates(response_url):
-        res = 'List of templates: ' + ','.join([get_name(template) for template in load_templates()['items']])
+        res = 'List of templates: \n' + ''.join(['• ' + get_name(template) + '\n' for template in load_templates()['items']]) + 'In order to deploy a cluster from one, run `/deploy <template name> <cluster name>`'
 
         payload = {"text": res,
                     "username": "CaaS"}
@@ -111,7 +116,7 @@ def list_instances():
         return validation_error
 
     def bg_list_instances(response_url):
-        res = 'List of clusters: \n' + '\n'.join([get_name(cti) + ': ' + get_status(cti) for cti in load_instances()['items']])
+        res = 'List of clusters: \n' + ''.join(['• ' + get_name(cti) + ': ' + get_status(cti) + ', requestor: ' + get_requester(cti) + '\n' for cti in load_instances()['items']]) + 'In order to get the credentials for one of them, run `/get-credentials <cluster name>`'
         payload = {"text": res,
                     "username": "CaaS"}
         requests.post(response_url,data=json.dumps(payload))   
@@ -136,14 +141,14 @@ def get_credentials():
         return input_err
 
     def bg_list_instances(cluster_name, response_url):
-        instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', 'slackbot-ns', '-o', 'json']).decode("utf-8").strip())
+        instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', 'default', '-o', 'json']).decode("utf-8").strip())
         if get_status(instance) != 'Ready':
             payload = {"text": 'The cluster is not yet ready, can not give credentials',
                     "username": "CaaS"}
             requests.post(response_url,data=json.dumps(payload))
         else:
             apiserver = instance['status']['apiServerURL']
-            secret = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'secret', cluster_name + '-admin-password', '-n', 'slackbot-ns', '-o', 'json']).decode("utf-8").strip())
+            secret = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'secret', cluster_name + '-admin-password', '-n', 'default', '-o', 'json']).decode("utf-8").strip())
             pwd = secret['data']['password']
             base64_message = pwd
             base64_bytes = base64_message.encode('ascii')
@@ -165,13 +170,15 @@ def deploy():
     if validation_error is not None:
         return validation_error
 
-    def bg_list_instances(template_name, cluster_name, response_url):
+    def bg_list_instances(template_name, cluster_name, user_name, response_url):
         oci = f"""
 apiVersion: clustertemplate.openshift.io/v1alpha1
 kind: ClusterTemplateInstance
 metadata:
-  namespace: slackbot-ns
+  namespace: default
   name: {cluster_name}
+  annotations:
+    slackbot.openshift.io/requester: {user_name}
 spec:
   clusterTemplateRef: {template_name}
 """
@@ -185,19 +192,46 @@ spec:
                     "username": "CaaS"}
         requests.post(response_url,data=json.dumps(payload))   
 
-
     params = request.form.get('text').split()
     if len(params) != 2:
         return 'Exactly two params expected. First is the name of the cluster template, second the name of the cluster. For example /deploy some-template my-cluster'
 
     template_name = params[0]
     cluster_name = params[1]
+    user_name = request.form.get("user_name")
     
     input_err = validate_input(template_name, cluster_name)
     if (input_err) is not None:
         return input_err
 
     response_url = request.form.get("response_url")
-    thr = Thread(target=bg_list_instances, args=[template_name, cluster_name, response_url])
+    thr = Thread(target=bg_list_instances, args=[template_name, cluster_name, user_name, response_url])
     thr.start()
     return f'Starting deploy cluster {cluster_name} from template {template_name}...'
+
+@app.route('/delete', methods=['POST'])
+def delete():
+    validation_error = verify_client_signature(request)
+    if validation_error is not None:
+        return validation_error
+
+    params = request.form.get('text').split()
+    if len(params) != 1:
+        return 'Exactly one parameter expected. Example /get-credentials my-cluster-name'
+
+    cluster_name = params[0]
+    input_err = validate_input(cluster_name)
+    if (input_err) is not None:
+        return input_err
+
+    def bg_delete(cluster_name, response_url):
+        subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'delete', 'cti', cluster_name])
+        payload = {"text": 'delete initiated',
+                    "username": "CaaS"}
+        requests.post(response_url,data=json.dumps(payload))
+
+    response_url = request.form.get("response_url")
+    thr = Thread(target=bg_delete, args=[cluster_name, response_url])
+    thr.start()
+    return f'Starting to delete cluster {cluster_name}...'
+
