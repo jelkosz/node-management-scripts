@@ -19,6 +19,8 @@ app = Flask(__name__)
 # pip install flask
 # pip install Flask-HTTPAuth
 
+user_namespace = 'clusters'
+
 # checks if the request actually came from the correct slack client or its an attack
 def verify_client_signature(request):
     # https://api.slack.com/authentication/verifying-requests-from-slack#signing_secrets_admin_page
@@ -76,11 +78,14 @@ def get_status(entity):
 
     return ''
 
+def load_quota():
+    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplatequota', '-o', 'json']).decode("utf-8").strip())
+
 def load_templates():
     return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplates', '-o', 'json']).decode("utf-8").strip())
 
 def load_instances():
-    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstances', '-n', 'default', '-o', 'json']).decode("utf-8").strip())
+    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstances', '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
 
 @app.route('/about', methods=['POST'])
 def about():
@@ -88,7 +93,7 @@ def about():
     if validation_error is not None:
         return validation_error
 
-    return 'This is the about message\n • one \n • two'
+    return 'Welome to the cluster as a service slackbot! \n • You can start by checking what clusters has already been deployed by typing `/list-clusters` \n • If you wish to explore what clusters you could deploy, please type `/list-templates`\nHave fun!'
 
 @app.route('/list-templates', methods=['POST'])
 def list_templates():
@@ -96,8 +101,35 @@ def list_templates():
     if validation_error is not None:
         return validation_error
 
+    def to_printable_template(template, quota_parsed):
+        template_name = get_name(template)
+        if template_name not in quota_parsed:
+            return '*' + template_name + '*: exists but is not allowed to be used'
+
+        if quota_parsed[template_name]['allowed'] == '-1':
+            return '*' + template_name + '*: no restrictions, make as much as you want!'
+
+        return '*' + get_name(template) + '* allowed: ' + quota_parsed[template_name]['allowed'] + ' already used: ' + quota_parsed[template_name]['used'] 
+
     def bg_list_templates(response_url):
-        res = 'List of templates: \n' + ''.join(['• ' + get_name(template) + '\n' for template in load_templates()['items']]) + 'In order to deploy a cluster from one, run `/deploy <template name> <cluster name>`'
+        # expecting that there is always exactly one quota in the namespace
+        # by definition there cant be more than one
+        # on the other hand there can be 0 which means that all templates are allowed. Ignoring this case for now
+        quota = load_quota()['items'][0]
+        quota_parsed = {}
+        for allowed_template in quota['spec']['allowedTemplates']:
+            allowed_count = -1
+            if 'count' in allowed_template:
+                allowed_count = allowed_template['count']
+
+            quota_parsed[allowed_template['name']] = {'allowed': str(allowed_count), 'used': str(0)}
+
+        for used_template in quota['status']['templateInstances']:
+            if 'count' in used_template:
+                quota_parsed[used_template['name']]['used'] = str(used_template['count'])
+
+
+        res = 'List of templates: \n' + ''.join(['• ' + to_printable_template(template, quota_parsed) + '\n' for template in load_templates()['items']]) + '\nIn order to deploy a cluster from one, run `/deploy <template name> <cluster name>`'
 
         payload = {"text": res,
                     "username": "CaaS"}
@@ -141,14 +173,14 @@ def get_credentials():
         return input_err
 
     def bg_list_instances(cluster_name, response_url):
-        instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', 'default', '-o', 'json']).decode("utf-8").strip())
+        instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
         if get_status(instance) != 'Ready':
             payload = {"text": 'The cluster is not yet ready, can not give credentials',
                     "username": "CaaS"}
             requests.post(response_url,data=json.dumps(payload))
         else:
             apiserver = instance['status']['apiServerURL']
-            secret = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'secret', cluster_name + '-admin-password', '-n', 'default', '-o', 'json']).decode("utf-8").strip())
+            secret = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'secret', cluster_name + '-admin-password', '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
             pwd = secret['data']['password']
             base64_message = pwd
             base64_bytes = base64_message.encode('ascii')
@@ -170,12 +202,12 @@ def deploy():
     if validation_error is not None:
         return validation_error
 
-    def bg_list_instances(template_name, cluster_name, user_name, response_url):
+    def bg_list_instances(template_name, cluster_name, user_name, u_namespace, response_url):
         oci = f"""
 apiVersion: clustertemplate.openshift.io/v1alpha1
 kind: ClusterTemplateInstance
 metadata:
-  namespace: default
+  namespace: {u_namespace}
   name: {cluster_name}
   annotations:
     slackbot.openshift.io/requester: {user_name}
@@ -205,7 +237,7 @@ spec:
         return input_err
 
     response_url = request.form.get("response_url")
-    thr = Thread(target=bg_list_instances, args=[template_name, cluster_name, user_name, response_url])
+    thr = Thread(target=bg_list_instances, args=[template_name, cluster_name, user_name, user_namespace, response_url])
     thr.start()
     return f'Starting deploy cluster {cluster_name} from template {template_name}...'
 
