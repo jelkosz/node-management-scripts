@@ -1,8 +1,12 @@
+# dependencies:
+# pip install flask
+# pip install Flask-HTTPAuth
+# pip install kubernetes
+
 from flask import Flask
 from flask import request, redirect
 from flask_httpauth import HTTPBasicAuth
 from werkzeug.security import generate_password_hash, check_password_hash
-import subprocess
 import re
 import validators
 import json
@@ -12,14 +16,25 @@ import base64
 import hmac
 import hashlib
 import time
+import kubernetes
+from kubernetes import config, client
+from kubernetes.client.rest import ApiException
+from pprint import pprint
 
 app = Flask(__name__)
 
-# dependencies:
-# pip install flask
-# pip install Flask-HTTPAuth
-
+# init kubernetes connction
+config.load_kube_config(config_file='/root/.kube/cluster-templates')
+api_client = client.ApiClient()
+api_instance = client.CustomObjectsApi(api_client)
+core_api_instance = client.CoreV1Api()
 user_namespace = 'clusters'
+
+group = 'clustertemplate.openshift.io'
+version = 'v1alpha1'
+pretty = 'true'
+limit = 56
+watch = False
 
 # checks if the request actually came from the correct slack client or its an attack
 def verify_client_signature(request):
@@ -78,14 +93,41 @@ def get_status(entity):
 
     return ''
 
-def load_quota():
-    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplatequota', '-o', 'json']).decode("utf-8").strip())
+# https://github.com/kubernetes-client/python/blob/master/kubernetes/docs/CustomObjectsApi.md
+def create_crd(body, namespace, plural):
+    try:
+        api_instance.create_namespaced_custom_object(group, version, namespace, plural, body, pretty=pretty)
+    except ApiException as e:
+        print("Exception when calling CustomObjectsApi->create_namespaced_custom_object: %s\n" % e)
+
+def delete_cti(name):
+    try:
+        api_instance.delete_namespaced_custom_object(group, version, user_namespace, 'clustertemplateinstances', name)
+    except ApiException as e:
+        print("Exception when calling CustomObjectsApi->delete_namespaced_custom_object %s\n" % e)
+
+def load_crd(crd_plural, name = None):
+    try:
+        if name is None:
+            return api_instance.list_cluster_custom_object(group, version, crd_plural, pretty=pretty, limit=limit, watch=watch)
+        return api_instance.get_namespaced_custom_object(group, version, user_namespace, crd_plural, name)
+    except ApiException as e:
+        print("Exception when calling CustomObjectsApi->list_cluster_custom_object: %s\n" % e)
 
 def load_templates():
-    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplates', '-o', 'json']).decode("utf-8").strip())
+    return load_crd('clustertemplates')
 
-def load_instances():
-    return json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstances', '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
+def load_instances(name = None):
+    return load_crd('clustertemplateinstances', name)
+
+def load_quota():
+    return load_crd('clustertemplatequotas')
+
+def load_secret(name):
+    try:
+        return core_api_instance.read_namespaced_secret(name, user_namespace).data
+    except ApiException as e:
+        print("Exception when getting secret: %s\n" % e)
 
 @app.route('/about', methods=['POST'])
 def about():
@@ -173,15 +215,20 @@ def get_credentials():
         return input_err
 
     def bg_list_instances(cluster_name, response_url):
-        instance = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'clustertemplateinstance', cluster_name, '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
-        if get_status(instance) != 'Ready':
+        instance = load_instances(cluster_name)
+
+        if instance is None:
+            payload = {"text": 'Can not find cluster with name ' + cluster_name,
+                    "username": "CaaS"}
+            requests.post(response_url,data=json.dumps(payload))
+        elif get_status(instance) != 'Ready':
             payload = {"text": 'The cluster is not yet ready, can not give credentials',
                     "username": "CaaS"}
             requests.post(response_url,data=json.dumps(payload))
         else:
             apiserver = instance['status']['apiServerURL']
-            secret = json.loads(subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'get', 'secret', cluster_name + '-admin-password', '-n', user_namespace, '-o', 'json']).decode("utf-8").strip())
-            pwd = secret['data']['password']
+            secret = load_secret(cluster_name + '-admin-password')
+            pwd = secret['password']
             base64_message = pwd
             base64_bytes = base64_message.encode('ascii')
             message_bytes = base64.b64decode(base64_bytes)
@@ -203,23 +250,21 @@ def deploy():
         return validation_error
 
     def bg_list_instances(template_name, cluster_name, user_name, u_namespace, response_url):
-        oci = f"""
-apiVersion: clustertemplate.openshift.io/v1alpha1
-kind: ClusterTemplateInstance
-metadata:
-  namespace: {u_namespace}
-  name: {cluster_name}
-  annotations:
-    slackbot.openshift.io/requester: {user_name}
-spec:
-  clusterTemplateRef: {template_name}
-"""
-
-        f = open("/tmp/f.yaml", "w")
-        f.write(oci)
-        f.close()
-        subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'apply', '-f', '/tmp/f.yaml'])
-
+        cti = {
+  "apiVersion": "clustertemplate.openshift.io/v1alpha1",
+  "kind": "ClusterTemplateInstance",
+  "metadata": {
+    "namespace": u_namespace,
+    "name": cluster_name,
+    "annotations": {
+      "slackbot.openshift.io/requester": user_name
+    }
+  },
+  "spec": {
+    "clusterTemplateRef": template_name
+  }
+}
+        create_crd(cti, u_namespace, 'clustertemplateinstances')
         payload = {"text": 'request to create a new cluster submitted',
                     "username": "CaaS"}
         requests.post(response_url,data=json.dumps(payload))   
@@ -257,7 +302,7 @@ def delete():
         return input_err
 
     def bg_delete(cluster_name, response_url):
-        subprocess.check_output(['oc', '--kubeconfig', '/root/.kube/cluster-templates', 'delete', 'cti', cluster_name])
+        delete_cti(cluster_name)
         payload = {"text": 'delete initiated',
                     "username": "CaaS"}
         requests.post(response_url,data=json.dumps(payload))
