@@ -16,6 +16,7 @@ import base64
 import hmac
 import hashlib
 import time
+import subprocess
 import kubernetes
 from kubernetes import config, client
 from kubernetes.client.rest import ApiException
@@ -129,6 +130,101 @@ def load_secret(name):
     except ApiException as e:
         print("Exception when getting secret: %s\n" % e)
 
+def aws_guess_key(parsed_aws, cluster_name):
+    return [key for key in parsed_aws.keys() if key.startswith('kubernetes.io/cluster/'+cluster_name)]
+
+def aws_parse_from_regions(regions):
+    # out = {<owned tag>: {states: [<state>], vmids: []}}
+    out = {}
+    for region in regions:
+        aws_cmd = 'aws ec2 describe-instances --region ' + region + ' --filters Name=tag:Name,Values=* --output json --query Reservations[*].Instances[*].[InstanceId,State.Name,Tags[*]]'
+        vms = json.loads(subprocess.check_output(aws_cmd.split()).decode("utf-8").strip())
+
+        for vm in vms:
+            id = vm[0][0]
+            for tag in vm[0][2]:
+                state = vm[0][1]
+                if state == 'terminated':
+                    # if it has been deleted, it is either a scaled down vm or an infra one
+                    # either way, I dont need to take it into account when starting/stopping the cluster
+                    continue
+                if (tag['Value'] == 'owned'):
+                    tagkey = tag['Key']
+                    if tagkey not in out:
+                        out[tagkey] = {'region': region, 'states': [vm[0][1]], 'ids': [id]}
+                    else:
+                        out[tagkey]['states'].append(vm[0][1])
+                        out[tagkey]['ids'].append(id)
+
+    return out
+
+def aws_status_of_cluster(cluster_name, parsed_aws):
+    guessed_key = aws_guess_key(parsed_aws, cluster_name)
+    if len(guessed_key) > 1:
+        return 'more clusters with the same prefix, cant find aws vms'
+
+    if len(guessed_key) == 0:
+        # not an aws vm
+        return ''
+
+    def all_in_state(states, expected_state):
+        return len([real_state for real_state in states if expected_state == real_state]) == len(states)
+
+    states = parsed_aws[guessed_key[0]]['states']
+    if (all_in_state(states, 'running')):
+        return '(All AWS VMs running)'
+    elif (all_in_state(states, 'stopped')):
+        return '(All AWS VMs stopped)'
+    else:
+        return '(AWS VMs transitioning)'
+
+def aws_start_stop_instances(command, cluster_name, response_url):
+    parsed_aws = aws_parse_from_regions(['us-east-1', 'us-east-2', 'us-west-2'])
+    guessed_key = aws_guess_key(parsed_aws, cluster_name)
+
+    res = 'AWS command initiated successfully'
+
+    if len(guessed_key) > 1:
+         res = 'More clusters with the same prefix, cant find aws vms. Please specify more unique cluster names'
+
+    if len(guessed_key) == 0:
+        res = 'Seems there are no AWS vms associated with this cluster. Are you sure its an AWS/ROSA cluster?'
+
+    vms = parsed_aws[guessed_key[0]]
+
+    aws_cmd = 'aws ec2 ' + command + ' --region ' + vms['region'] + ' --instance-id ' + ' '.join(vms['ids'])
+    print(subprocess.check_output(aws_cmd.split()))
+    payload = {"text": res,
+                "username": "CaaS"}
+    requests.post(response_url, data=json.dumps(payload))
+
+def aws_start_stop_request_handler(request, action, example):
+    validation_error = verify_client_signature(request)
+    if validation_error is not None:
+        return validation_error
+
+    params = request.form.get('text').split()
+    if len(params) != 1:
+        return 'Exactly one parameter expected. Example /' + example + ' my-cluster-name'
+
+    input_err = validate_input(params[0])
+    if (input_err) is not None:
+        return input_err
+
+    response_url = request.form.get("response_url")
+    thr = Thread(target=aws_start_stop_instances, args=[action, params[0], response_url])
+    thr.start()
+
+    return 'Going to call AWS, might take a while...'
+
+@app.route('/start-aws-vms', methods=['POST'])
+def aws_start_vms():
+    return aws_start_stop_request_handler(request, 'start-instances', 'start-aws-vms')
+
+@app.route('/stop-aws-vms', methods=['POST'])
+def aws_stop_vms():
+    return aws_start_stop_request_handler(request, 'stop-instances', 'stop-aws-vms')
+
 @app.route('/about', methods=['POST'])
 def about():
     validation_error = verify_client_signature(request)
@@ -190,7 +286,9 @@ def list_instances():
         return validation_error
 
     def bg_list_instances(response_url):
-        res = 'List of clusters: \n' + ''.join(['• ' + get_name(cti) + ': ' + get_status(cti) + ', requestor: ' + get_requester(cti) + '\n' for cti in load_instances()['items']]) + 'In order to get the credentials for one of them, run `/get-credentials <cluster name>`'
+        aws_vms = aws_parse_from_regions(['us-east-1', 'us-east-2', 'us-west-2'])
+
+        res = 'List of clusters: \n' + ''.join(['• ' + get_name(cti) + ': ' + get_status(cti) + ', requestor: ' + get_requester(cti) + ' ' + aws_status_of_cluster(get_name(cti), aws_vms) + '\n' for cti in load_instances()['items']]) + 'In order to get the credentials for one of them, run `/get-credentials <cluster name>`'
         payload = {"text": res,
                     "username": "CaaS"}
         requests.post(response_url,data=json.dumps(payload))   
@@ -311,4 +409,3 @@ def delete():
     thr = Thread(target=bg_delete, args=[cluster_name, response_url])
     thr.start()
     return f'Starting to delete cluster {cluster_name}...'
-
